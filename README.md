@@ -30,9 +30,19 @@ This host-side route is useful on managed Macs that disallow ad-hoc-signed simul
 ## Architecture
 
 - `Scanner/QRScannerView.swift` owns AVFoundation camera capture and uses ZXing-C++ to preserve raw QR bytes.
-- `Membership/MembershipCredential.swift` parses the binary format and gates display behind `MembershipSignatureVerifying`.
+- `Membership/MembershipCredential.swift` parses the binary format, verifies minimal-signature-size BLS12-381 signatures, and gates display behind `MembershipSignatureVerifying`.
 - `Features/Scanner/ScannerScreen.swift` presents scanner state and results.
+
+The BLS implementation is the audited upstream [`supranational/blst`](https://github.com/supranational/blst)
+source, pinned and packaged locally under `Vendor/BlstPackage`. Verification rejects malformed,
+non-canonical, identity, and wrong-subgroup G1 signatures and G2 public keys before pairing.
 
 ## Security status
 
-QR contents are captured locally and are not transmitted. The app validates the complete version 1 binary structure. A trusted BLS public key and BLS12-381 verifier still need to be configured before a membership can be accepted. Until then, the app does not display the encoded name or flags.
+QR contents are captured locally and are not transmitted. The app validates the version 1 binary
+structure and implements BLS12-381 verification, but no issuer public key is provisioned by default.
+Until a trusted key is supplied out of band, the app does not display the encoded name or flags.
+
+The upstream format is now draft 0.4 and encodes names with `namecompress`. This checkout still
+parses the earlier UTF-8 name field and therefore needs the issuer-specific name model integration
+before it can read credentials produced by the current reference service.

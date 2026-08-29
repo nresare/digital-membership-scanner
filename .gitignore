@@ -1,6 +1,11 @@
 DerivedData/
 .build/
 build/
+.swiftpm/
 *.xcuserstate
 xcuserdata/
 .DS_Store
+
+# blst's generated assembly is source input, not an Xcode build product.
+!Vendor/BlstPackage/Sources/CBlst/build/
+!Vendor/BlstPackage/Sources/CBlst/build/**

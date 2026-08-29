@@ -1,3 +1,4 @@
+import CBlst
 import Foundation
 
 struct ParsedMembershipCredential: Equatable, Sendable {
@@ -110,6 +111,107 @@ protocol MembershipSignatureVerifying: Sendable {
     func verify(_ credential: ParsedMembershipCredential) throws -> Bool
 }
 
+enum MembershipSignatureVerificationError: LocalizedError, Equatable, Sendable {
+    case trustedKeyUnavailable(keyID: UInt8)
+    case invalidTrustedPublicKey(keyID: UInt8)
+    case invalidSignatureEncoding
+
+    var errorDescription: String? {
+        switch self {
+        case let .trustedKeyUnavailable(keyID):
+            "No trusted BLS public key is configured for key ID \(keyID)."
+        case let .invalidTrustedPublicKey(keyID):
+            "The trusted BLS public key for key ID \(keyID) is invalid."
+        case .invalidSignatureEncoding:
+            "The credential signature is not a canonical BLS12-381 G1 point."
+        }
+    }
+}
+
+struct UnavailableMembershipSignatureVerifier: MembershipSignatureVerifying {
+    func verify(_ credential: ParsedMembershipCredential) throws -> Bool {
+        throw MembershipSignatureVerificationError.trustedKeyUnavailable(keyID: credential.keyID)
+    }
+}
+
+struct BLSTMembershipSignatureVerifier: MembershipSignatureVerifying {
+    static let publicKeyLength = 96
+    static let ciphersuite = Data("BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_NUL_".utf8)
+
+    let trustedPublicKeys: [UInt8: Data]
+
+    func verify(_ credential: ParsedMembershipCredential) throws -> Bool {
+        guard let publicKeyBytes = trustedPublicKeys[credential.keyID] else {
+            throw MembershipSignatureVerificationError.trustedKeyUnavailable(keyID: credential.keyID)
+        }
+        guard publicKeyBytes.count == Self.publicKeyLength else {
+            throw MembershipSignatureVerificationError.invalidTrustedPublicKey(keyID: credential.keyID)
+        }
+
+        var publicKey = blst_p2_affine()
+        let publicKeyDecodeResult = publicKeyBytes.withUnsafeBytes { bytes in
+            blst_p2_uncompress(&publicKey, bytes.bindMemory(to: UInt8.self).baseAddress!)
+        }
+        guard publicKeyDecodeResult == BLST_SUCCESS,
+              blst_p2_affine_in_g2(&publicKey),
+              !blst_p2_affine_is_inf(&publicKey),
+              Self.isCanonical(publicKey, encodedAs: publicKeyBytes)
+        else {
+            throw MembershipSignatureVerificationError.invalidTrustedPublicKey(keyID: credential.keyID)
+        }
+
+        var signature = blst_p1_affine()
+        let signatureDecodeResult = credential.signature.withUnsafeBytes { bytes in
+            blst_p1_uncompress(&signature, bytes.bindMemory(to: UInt8.self).baseAddress!)
+        }
+        guard signatureDecodeResult == BLST_SUCCESS,
+              blst_p1_affine_in_g1(&signature),
+              !blst_p1_affine_is_inf(&signature),
+              Self.isCanonical(signature, encodedAs: credential.signature)
+        else {
+            throw MembershipSignatureVerificationError.invalidSignatureEncoding
+        }
+
+        var message = MembershipCredentialParser.domainPrefix
+        message.append(credential.unsignedCredential)
+
+        let verificationResult = message.withUnsafeBytes { messageBytes in
+            Self.ciphersuite.withUnsafeBytes { ciphersuiteBytes in
+                blst_core_verify_pk_in_g2(
+                    &publicKey,
+                    &signature,
+                    true,
+                    messageBytes.bindMemory(to: UInt8.self).baseAddress!,
+                    messageBytes.count,
+                    ciphersuiteBytes.bindMemory(to: UInt8.self).baseAddress!,
+                    ciphersuiteBytes.count,
+                    nil,
+                    0
+                )
+            }
+        }
+        return verificationResult == BLST_SUCCESS
+    }
+
+    private static func isCanonical(_ publicKey: blst_p2_affine, encodedAs bytes: Data) -> Bool {
+        var publicKey = publicKey
+        var canonical = Data(repeating: 0, count: publicKeyLength)
+        canonical.withUnsafeMutableBytes { output in
+            blst_p2_affine_compress(output.bindMemory(to: UInt8.self).baseAddress!, &publicKey)
+        }
+        return canonical == bytes
+    }
+
+    private static func isCanonical(_ signature: blst_p1_affine, encodedAs bytes: Data) -> Bool {
+        var signature = signature
+        var canonical = Data(repeating: 0, count: MembershipCredentialParser.signatureLength)
+        canonical.withUnsafeMutableBytes { output in
+            blst_p1_affine_compress(output.bindMemory(to: UInt8.self).baseAddress!, &signature)
+        }
+        return canonical == bytes
+    }
+}
+
 enum MembershipVerificationResult: Identifiable, Sendable {
     case verified(VerifiedMembership)
     case rejected(String)
@@ -126,11 +228,11 @@ enum MembershipVerificationResult: Identifiable, Sendable {
 
 struct MembershipCredentialValidator: Sendable {
     let parser: MembershipCredentialParser
-    let verifier: (any MembershipSignatureVerifying)?
+    let verifier: any MembershipSignatureVerifying
 
     init(
         parser: MembershipCredentialParser = MembershipCredentialParser(),
-        verifier: (any MembershipSignatureVerifying)? = nil
+        verifier: any MembershipSignatureVerifying = UnavailableMembershipSignatureVerifier()
     ) {
         self.parser = parser
         self.verifier = verifier
@@ -139,12 +241,13 @@ struct MembershipCredentialValidator: Sendable {
     func validate(_ data: Data) -> MembershipVerificationResult {
         do {
             let parsed = try parser.parse(data)
-            guard let verifier else { return .trustedKeyUnavailable(keyID: parsed.keyID) }
             guard try verifier.verify(parsed) else { return .rejected("The credential signature is invalid.") }
             guard let name = String(data: parsed.nameBytes, encoding: .utf8) else {
                 return .rejected("The verified name could not be decoded.")
             }
             return .verified(VerifiedMembership(name: name, flags: parsed.flags, keyID: parsed.keyID))
+        } catch let MembershipSignatureVerificationError.trustedKeyUnavailable(keyID) {
+            return .trustedKeyUnavailable(keyID: keyID)
         } catch {
             return .rejected(error.localizedDescription)
         }

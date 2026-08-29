@@ -28,11 +28,21 @@ Implemented:
 - Minimal flag encoding enforcement.
 - UTF-8 name length, encoding, and control-character validation.
 - A validation boundary (`MembershipSignatureVerifying`) that prevents the UI from displaying the name or flags until signature verification succeeds.
+- Production BLS12-381 minimal-signature-size verification using locally pinned upstream `blst`.
+- Canonical encoding, identity, curve, and subgroup validation for G1 signatures and G2 public keys.
+- Deterministic verification fixtures generated with the reference Rust implementation and `blst` 0.3.17.
 - SwiftUI results for verified, rejected, and missing-trusted-key states.
 - Camera privacy description and a shared Xcode scheme.
 - Xcode unit tests plus a host-side Swift package test suite.
 
-The app currently compiles, scans raw QR bytes, and validates credential structure. It does **not yet perform BLS signature verification**, so it deliberately reports a structurally valid credential as “Key unavailable” and does not reveal its name or flags.
+The app compiles, scans raw QR bytes, validates credential structure, and performs BLS signature
+verification when a trusted key is injected. No issuer key is provisioned by default, so the shipping
+UI still deliberately reports “Key unavailable” and does not reveal the name or flags.
+
+The reference specification has since moved to draft 0.4 and now encodes names with issuer-specific
+`namecompress` models. The parser in this checkout still expects the earlier UTF-8 name field. BLS
+verification operates on the raw unsigned credential and is already compatible, but current reference
+credentials require name-model decompression support before they can be displayed.
 
 ## Important files
 
@@ -59,13 +69,14 @@ xcodebuild \
   build
 ```
 
-The host-side parser suite passes all 8 tests:
+The host-side parser and signature suite passes all 15 tests:
 
 ```bash
 swift test
 ```
 
-The tests cover the specification example, extended flag lengths, short credentials, unsupported versions, non-minimal lengths/flags, control characters, and suppression of the name when no trusted key exists.
+The tests cover parsing edge cases, suppression of unverified names, a deterministic Rust-signed
+credential, signed-payload and key-ID tampering, and identity G1/G2 point rejection.
 
 ## Managed-computer signing problem
 
@@ -86,22 +97,13 @@ Do not copy `DerivedData/` or `.build/` to the new machine; both are generated a
 
 ## Highest-priority next work
 
-### 1. Implement BLS12-381 verification
+### 1. Add draft-0.4 name decompression
 
-Implement `MembershipSignatureVerifying` using a well-maintained cryptographic library, likely the upstream `blst` library from Supranational after assessing the best iOS packaging approach.
+Integrate `namecompress` decoding and provision each key ID with both its trusted G2 public key and
+matching name model. Keep the existing order: verify the signature over raw bytes first, then
+decompress and validate the display name, and only then construct `VerifiedMembership`.
 
-Required rules from the specification:
-
-- Ciphersuite: `BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_NUL_`.
-- Minimal-signature-size variant.
-- Signature: canonical 48-byte compressed G1 point, non-identity and in the correct subgroup.
-- Public key: canonical 96-byte compressed G2 point, non-identity and in the correct subgroup.
-- Signed message: ASCII `digital-membership/v1\x00` followed by the complete unsigned credential.
-- Key ID selects one of up to eight trusted public keys configured out of band.
-
-`MembershipCredentialParser.domainPrefix` already contains the required prefix, and `ParsedMembershipCredential` exposes `unsignedCredential` and `signature` to a verifier. Only construct/display `VerifiedMembership` after cryptographic verification returns true.
-
-### 2. Decide how trusted keys are provisioned
+### 2. Decide how trusted keys and name models are provisioned
 
 The reference issuer exposes `GET /public-key`, returning the algorithm, key ID, and an unpadded Base64URL-encoded 96-byte public key. The service currently generates a fresh key whenever it starts.
 
@@ -109,7 +111,7 @@ Choose a production trust model. Plausible first iteration:
 
 - A settings/configuration screen imports issuer URL and public key while online.
 - Validate the algorithm and exact decoded key length.
-- Persist trusted public keys by key ID in the Keychain or an app configuration bundle.
+- Persist trusted public keys and matching name models by key ID in the Keychain/app storage or an app configuration bundle.
 - Perform card verification entirely offline after provisioning.
 
 Do not silently fetch a key from an issuer in response to scanning a card; that would let an untrusted card choose its own trust root.
@@ -138,4 +140,3 @@ Never display the parsed name before signature verification. Parsing structural 
 ## Suggested opening prompt for the next Codex session
 
 > Continue the iOS Digital Membership Scanner from `HANDOFF.md`. First inspect the existing project and rerun `swift test` plus an Xcode build. Then implement production-grade BLS12-381 minimal-signature-size verification behind `MembershipSignatureVerifying`, with deterministic interoperability fixtures from the reference Rust implementation. Preserve the rule that names and flags are never displayed before successful signature verification.
-
