@@ -3,16 +3,13 @@ import SwiftUI
 import UIKit
 
 struct ScannerScreen: View {
-    private let validator: MembershipCredentialValidator
+    @StateObject private var issuerStore = IssuerTrustStore()
 
     @State private var cameraStatus = AVCaptureDevice.authorizationStatus(for: .video)
     @State private var result: MembershipVerificationResult?
     @State private var scannerError: String?
     @State private var scanID = UUID()
-
-    init(validator: MembershipCredentialValidator = MembershipCredentialValidator()) {
-        self.validator = validator
-    }
+    @State private var isPresentingIssuerConfiguration = false
 
     var body: some View {
         NavigationStack {
@@ -30,11 +27,20 @@ struct ScannerScreen: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbarBackground(Color.black, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
+            .toolbar {
+                Button("Configure issuer", systemImage: "gearshape") {
+                    isPresentingIssuerConfiguration = true
+                }
+                .accessibilityHint("Download a trusted issuer public key and name model")
+            }
         }
         .preferredColorScheme(.dark)
         .sheet(item: $result) { result in
             ScanResultView(result: result) { resetScanner() }
                 .interactiveDismissDisabled()
+        }
+        .sheet(isPresented: $isPresentingIssuerConfiguration) {
+            IssuerConfigurationView(store: issuerStore)
         }
         .alert("Scanner unavailable", isPresented: scannerErrorBinding) {
             Button("Try again") { scanID = UUID() }
@@ -46,7 +52,7 @@ struct ScannerScreen: View {
     private var scanner: some View {
         ZStack {
             QRScannerView(
-                onCodeScanned: { result = validator.validate($0) },
+                onCodeScanned: { result = issuerStore.validator().validate($0) },
                 onFailure: { scannerError = $0 }
             )
             .id(scanID)
@@ -105,6 +111,68 @@ struct ScannerScreen: View {
     private func resetScanner() {
         result = nil
         scanID = UUID()
+    }
+}
+
+private struct IssuerConfigurationView: View {
+    @ObservedObject var store: IssuerTrustStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var provisioningURL = ""
+    @State private var isLoading = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Trusted issuer") {
+                    Text("Scanning never downloads a key. Import the issuer configuration yourself before scanning cards.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    TextField("Provisioning URL", text: $provisioningURL)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled()
+                }
+
+                if store.isConfigured {
+                    Section {
+                        Label("An issuer configuration is installed", systemImage: "checkmark.shield.fill")
+                            .foregroundStyle(.green)
+                    }
+                }
+
+                if let error = store.provisioningError {
+                    Section {
+                        Text(error).foregroundStyle(.red)
+                    }
+                }
+
+                Section {
+                    Button {
+                        isLoading = true
+                        Task {
+                            await store.provision(from: provisioningURL)
+                            isLoading = false
+                        }
+                    } label: {
+                        if isLoading {
+                            HStack { Spacer(); ProgressView(); Spacer() }
+                        } else {
+                            Label("Download and trust issuer", systemImage: "arrow.down.circle")
+                        }
+                    }
+                    .disabled(provisioningURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading)
+                } footer: {
+                    Text("Only use an address you trust. An issuer configuration can validate every card that uses its key ID.")
+                }
+            }
+            .navigationTitle("Configure issuer")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done", action: dismiss.callAsFunction)
+                }
+            }
+        }
     }
 }
 
