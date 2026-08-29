@@ -8,13 +8,15 @@ let package = Package(
         .library(name: "DigitalMembershipCore", targets: ["DigitalMembershipCore"])
     ],
     dependencies: [
-        .package(path: "Vendor/BlstPackage")
+        .package(path: "Vendor/BlstPackage"),
+        .package(path: "Vendor/XZEmbeddedPackage")
     ],
     targets: [
         .target(
             name: "DigitalMembershipCore",
             dependencies: [
-                .product(name: "CBlst", package: "BlstPackage")
+                .product(name: "CBlst", package: "BlstPackage"),
+                .product(name: "CXZ", package: "XZEmbeddedPackage")
             ],
             path: "DigitalMembershipScanner/Membership"
         ),

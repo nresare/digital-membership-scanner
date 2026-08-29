@@ -46,10 +46,13 @@ final class MembershipCredentialTests: XCTestCase {
         }
     }
 
-    func testRejectsControlCharacterInName() {
-        let payload = makeCredential(header: 0x20, flags: [], nameBytes: Data([0x41, 0x0A]))
-        XCTAssertThrowsError(try parser.parse(payload)) {
-            XCTAssertEqual($0 as? MembershipCredentialError, .controlCharacterInName)
+    func testRejectsControlCharacterInDecodedName() {
+        let validator = MembershipCredentialValidator(
+            verifier: AlwaysValidSignatureVerifier(),
+            nameDecoder: FixedNameDecoder(name: "A\n")
+        )
+        guard case .rejected = validator.validate(makeCredential(header: 0x20, flags: [], name: "encoded")) else {
+            return XCTFail("Expected the decoded control character to be rejected")
         }
     }
 
@@ -134,7 +137,8 @@ final class MembershipCredentialTests: XCTestCase {
 
     private func validator() -> MembershipCredentialValidator {
         MembershipCredentialValidator(
-            verifier: BLSTMembershipSignatureVerifier(trustedPublicKeys: [2: Self.referencePublicKey])
+            verifier: BLSTMembershipSignatureVerifier(trustedPublicKeys: [2: Self.referencePublicKey]),
+            nameDecoder: UTF8MembershipNameDecoder()
         )
     }
 
@@ -157,6 +161,15 @@ final class MembershipCredentialTests: XCTestCase {
             let end = value.index(start, offsetBy: 2)
             return UInt8(value[start..<end], radix: 16)!
         })
+    }
+
+    private struct AlwaysValidSignatureVerifier: MembershipSignatureVerifying {
+        func verify(_ credential: ParsedMembershipCredential) throws -> Bool { true }
+    }
+
+    private struct FixedNameDecoder: MembershipNameDecoding {
+        let name: String
+        func decompressName(_ bytes: Data, keyID: UInt8) throws -> String { name }
     }
 
     private func makeCredential(header: UInt8, flags: [UInt8], name: String) -> Data {

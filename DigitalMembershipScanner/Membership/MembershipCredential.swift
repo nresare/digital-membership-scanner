@@ -82,12 +82,6 @@ struct MembershipCredentialParser: Sendable {
         guard (1...255).contains(nameLength) else { throw MembershipCredentialError.invalidNameLength }
 
         let nameBytes = Data(data[flagEnd..<signatureStart])
-        guard let name = String(data: nameBytes, encoding: .utf8) else {
-            throw MembershipCredentialError.invalidNameEncoding
-        }
-        guard name.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
-            throw MembershipCredentialError.controlCharacterInName
-        }
 
         var flags = Set<Int>()
         for (byteIndex, byte) in flagBytes.enumerated() {
@@ -109,6 +103,36 @@ struct MembershipCredentialParser: Sendable {
 
 protocol MembershipSignatureVerifying: Sendable {
     func verify(_ credential: ParsedMembershipCredential) throws -> Bool
+}
+
+protocol MembershipNameDecoding: Sendable {
+    func decompressName(_ bytes: Data, keyID: UInt8) throws -> String
+}
+
+struct UnavailableMembershipNameDecoder: MembershipNameDecoding {
+    func decompressName(_ bytes: Data, keyID: UInt8) throws -> String {
+        throw MembershipSignatureVerificationError.trustedKeyUnavailable(keyID: keyID)
+    }
+}
+
+struct NameCompressionMembershipNameDecoder: MembershipNameDecoding {
+    let models: [UInt8: NameCompressionTable]
+
+    func decompressName(_ bytes: Data, keyID: UInt8) throws -> String {
+        guard let model = models[keyID] else {
+            throw MembershipSignatureVerificationError.trustedKeyUnavailable(keyID: keyID)
+        }
+        return try model.decompress(bytes)
+    }
+}
+
+struct UTF8MembershipNameDecoder: MembershipNameDecoding {
+    func decompressName(_ bytes: Data, keyID: UInt8) throws -> String {
+        guard let name = String(data: bytes, encoding: .utf8) else {
+            throw MembershipCredentialError.invalidNameEncoding
+        }
+        return name
+    }
 }
 
 enum MembershipSignatureVerificationError: LocalizedError, Equatable, Sendable {
@@ -144,19 +168,7 @@ struct BLSTMembershipSignatureVerifier: MembershipSignatureVerifying {
         guard let publicKeyBytes = trustedPublicKeys[credential.keyID] else {
             throw MembershipSignatureVerificationError.trustedKeyUnavailable(keyID: credential.keyID)
         }
-        guard publicKeyBytes.count == Self.publicKeyLength else {
-            throw MembershipSignatureVerificationError.invalidTrustedPublicKey(keyID: credential.keyID)
-        }
-
-        var publicKey = blst_p2_affine()
-        let publicKeyDecodeResult = publicKeyBytes.withUnsafeBytes { bytes in
-            blst_p2_uncompress(&publicKey, bytes.bindMemory(to: UInt8.self).baseAddress!)
-        }
-        guard publicKeyDecodeResult == BLST_SUCCESS,
-              blst_p2_affine_in_g2(&publicKey),
-              !blst_p2_affine_is_inf(&publicKey),
-              Self.isCanonical(publicKey, encodedAs: publicKeyBytes)
-        else {
+        guard var publicKey = Self.validatedPublicKey(publicKeyBytes) else {
             throw MembershipSignatureVerificationError.invalidTrustedPublicKey(keyID: credential.keyID)
         }
 
@@ -191,6 +203,25 @@ struct BLSTMembershipSignatureVerifier: MembershipSignatureVerifying {
             }
         }
         return verificationResult == BLST_SUCCESS
+    }
+
+    static func isValidTrustedPublicKey(_ bytes: Data) -> Bool {
+        validatedPublicKey(bytes) != nil
+    }
+
+    private static func validatedPublicKey(_ bytes: Data) -> blst_p2_affine? {
+        guard bytes.count == publicKeyLength else { return nil }
+
+        var publicKey = blst_p2_affine()
+        let decodeResult = bytes.withUnsafeBytes { rawBytes in
+            blst_p2_uncompress(&publicKey, rawBytes.bindMemory(to: UInt8.self).baseAddress!)
+        }
+        guard decodeResult == BLST_SUCCESS,
+              blst_p2_affine_in_g2(&publicKey),
+              !blst_p2_affine_is_inf(&publicKey),
+              isCanonical(publicKey, encodedAs: bytes)
+        else { return nil }
+        return publicKey
     }
 
     private static func isCanonical(_ publicKey: blst_p2_affine, encodedAs bytes: Data) -> Bool {
@@ -229,21 +260,26 @@ enum MembershipVerificationResult: Identifiable, Sendable {
 struct MembershipCredentialValidator: Sendable {
     let parser: MembershipCredentialParser
     let verifier: any MembershipSignatureVerifying
+    let nameDecoder: any MembershipNameDecoding
 
     init(
         parser: MembershipCredentialParser = MembershipCredentialParser(),
-        verifier: any MembershipSignatureVerifying = UnavailableMembershipSignatureVerifier()
+        verifier: any MembershipSignatureVerifying = UnavailableMembershipSignatureVerifier(),
+        nameDecoder: any MembershipNameDecoding = UnavailableMembershipNameDecoder()
     ) {
         self.parser = parser
         self.verifier = verifier
+        self.nameDecoder = nameDecoder
     }
 
     func validate(_ data: Data) -> MembershipVerificationResult {
         do {
             let parsed = try parser.parse(data)
             guard try verifier.verify(parsed) else { return .rejected("The credential signature is invalid.") }
-            guard let name = String(data: parsed.nameBytes, encoding: .utf8) else {
-                return .rejected("The verified name could not be decoded.")
+            let name = try nameDecoder.decompressName(parsed.nameBytes, keyID: parsed.keyID)
+            guard (1...255).contains(name.utf8.count) else { throw MembershipCredentialError.invalidNameLength }
+            guard name.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+                throw MembershipCredentialError.controlCharacterInName
             }
             return .verified(VerifiedMembership(name: name, flags: parsed.flags, keyID: parsed.keyID))
         } catch let MembershipSignatureVerificationError.trustedKeyUnavailable(keyID) {
