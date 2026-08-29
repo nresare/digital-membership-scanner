@@ -13,6 +13,7 @@
 		A10000000000000000000005 /* MembershipCredentialTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* MembershipCredentialTests.swift */; };
 		A10000000000000000000006 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* XCTest.framework */; };
 		A10000000000000000000007 /* ZXingCpp in Frameworks */ = {isa = PBXBuildFile; productRef = AD0000000000000000000002 /* ZXingCpp */; };
+		A10000000000000000000008 /* CBlst in Frameworks */ = {isa = PBXBuildFile; productRef = AD0000000000000000000004 /* CBlst */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -37,7 +38,7 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		A40000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000007 /* ZXingCpp in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
+		A40000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000008 /* CBlst in Frameworks */, A10000000000000000000007 /* ZXingCpp in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
 		A40000000000000000000002 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000006 /* XCTest.framework in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
@@ -71,7 +72,7 @@
 			buildRules = ();
 			dependencies = ();
 			name = DigitalMembershipScanner;
-			packageProductDependencies = (AD0000000000000000000002 /* ZXingCpp */,);
+			packageProductDependencies = (AD0000000000000000000002 /* ZXingCpp */, AD0000000000000000000004 /* CBlst */,);
 			productName = DigitalMembershipScanner;
 			productReference = A20000000000000000000006 /* DigitalMembershipScanner.app */;
 			productType = "com.apple.product-type.application";
@@ -107,7 +108,7 @@
 			hasScannedForEncodings = 0;
 			knownRegions = (en, Base);
 			mainGroup = A50000000000000000000001;
-			packageReferences = (AD0000000000000000000001 /* XCRemoteSwiftPackageReference "zxing-cpp" */,);
+			packageReferences = (AD0000000000000000000001 /* XCRemoteSwiftPackageReference "zxing-cpp" */, AD0000000000000000000003 /* XCLocalSwiftPackageReference "BlstPackage" */,);
 			productRefGroup = A50000000000000000000009 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -152,11 +153,23 @@
 		};
 /* End XCRemoteSwiftPackageReference section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		AD0000000000000000000003 /* XCLocalSwiftPackageReference "BlstPackage" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Vendor/BlstPackage;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		AD0000000000000000000002 /* ZXingCpp */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AD0000000000000000000001 /* XCRemoteSwiftPackageReference "zxing-cpp" */;
 			productName = ZXingCpp;
+		};
+		AD0000000000000000000004 /* CBlst */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AD0000000000000000000003 /* XCLocalSwiftPackageReference "BlstPackage" */;
+			productName = CBlst;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
