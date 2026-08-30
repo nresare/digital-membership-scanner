@@ -192,3 +192,57 @@ struct MembershipCredentialTests {
         return data
     }
 }
+
+@Suite("Issuer setup discovery")
+struct IssuerSetupTests {
+    @Test func decodesSetupAndResolvesProvisioningURL() throws {
+        let response = try JSONDecoder().decode(
+            IssuerSetupResponse.self,
+            from: Data(
+                #"{"issuers":[{"id":"choir","description":"Example Choir","provision_url":"/api/choir/provision"}]}"#.utf8
+            )
+        )
+
+        #expect(response.issuers.count == 1)
+        #expect(response.issuers[0].id == "choir")
+        #expect(response.issuers[0].description == "Example Choir")
+        #expect(
+            try response.issuers[0].provisioningEndpoint(relativeTo: #require(URL(string: "https://dm.noa.re/setup")))
+                == URL(string: "https://dm.noa.re/api/choir/provision")
+        )
+    }
+
+    @Test func rejectsNonHTTPProvisioningURL() throws {
+        let issuer = SetupIssuer(id: "choir", description: "Example Choir", provisionURL: "file:///tmp/key")
+        let setupURL = try #require(URL(string: "https://dm.noa.re/setup"))
+
+        #expect(throws: IssuerProvisioningError.invalidProvisioningURL) {
+            try issuer.provisioningEndpoint(relativeTo: setupURL)
+        }
+    }
+
+    @Test func rejectsProvisioningURLOnAnotherOrigin() throws {
+        let issuer = SetupIssuer(
+            id: "choir",
+            description: "Example Choir",
+            provisionURL: "https://example.com/api/choir/provision"
+        )
+        let setupURL = try #require(URL(string: "https://dm.noa.re/setup"))
+
+        #expect(throws: IssuerProvisioningError.invalidProvisioningURL) {
+            try issuer.provisioningEndpoint(relativeTo: setupURL)
+        }
+    }
+
+    @Test func decodesCurrentProvisioningResponseWithoutKeyID() throws {
+        let response = try JSONDecoder().decode(
+            IssuerProvisioningResponse.self,
+            from: Data(
+                #"{"algorithm":"BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_NUL_","id":"choir","description":"Example Choir","name_model_id":123,"name_model_url":"/api/choir/model/model.ncmp.xz","public_key":"abc","flags":["member"]}"#.utf8
+            )
+        )
+
+        #expect(response.id == "choir")
+        #expect(response.flags == ["member"])
+    }
+}
