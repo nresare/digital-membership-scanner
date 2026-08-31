@@ -72,10 +72,11 @@ struct ScannerScreen: View {
                 Spacer()
                 Label("Align the membership QR code inside the frame", systemImage: "qrcode.viewfinder")
                     .font(.callout.weight(.semibold))
+                    .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 14)
-                    .background(.black.opacity(0.72), in: Capsule())
+                    .background(.black.opacity(0.82), in: Capsule())
                     .padding(.bottom, 36)
             }
             .padding()
