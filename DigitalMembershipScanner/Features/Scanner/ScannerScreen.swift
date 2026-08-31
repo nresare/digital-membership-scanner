@@ -52,6 +52,7 @@ struct ScannerScreen: View {
     private var scanner: some View {
         ZStack {
             QRScannerView(
+                isPaused: isPresentingIssuerConfiguration,
                 onCodeScanned: {
                     let verificationResult = issuerStore.validator().validate($0)
                     scanFeedback.play(for: verificationResult)
@@ -234,11 +235,11 @@ private struct IssuerConfigurationView: View {
                                     .foregroundStyle(.primary)
                                 Text("Currently installed")
                                     .font(.caption)
-                                    .foregroundStyle(.mint)
+                                    .foregroundStyle(.blue)
                             }
                         } icon: {
                             Image(systemName: "checkmark.shield.fill")
-                                .foregroundStyle(.mint)
+                                .foregroundStyle(.blue)
                         }
                     }
                 }
@@ -400,10 +401,10 @@ private struct PermissionView: View {
 
     var body: some View {
         VStack(spacing: 18) {
-            Image(systemName: symbol).font(.system(size: 52)).foregroundStyle(.mint)
+            Image(systemName: symbol).font(.system(size: 52)).foregroundStyle(.blue)
             Text(title).font(.title2.bold())
             Text(message).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            Button(actionTitle, action: action).buttonStyle(.borderedProminent).tint(.mint)
+            Button(actionTitle, action: action).buttonStyle(.borderedProminent).tint(.blue)
         }
         .padding(32)
     }
@@ -434,7 +435,7 @@ private struct ScanResultView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
                     .buttonStyle(.borderedProminent)
-                    .tint(.mint)
+                    .tint(.blue)
                     .padding(.horizontal, 24)
                     .padding(.vertical, 12)
                     .background(.bar)
@@ -448,15 +449,11 @@ private struct ScanResultView: View {
             Label("Signature verified", systemImage: "checkmark.shield.fill")
                 .font(.subheadline.bold())
                 .textCase(.uppercase)
-                .foregroundStyle(.mint)
+                .foregroundStyle(.blue)
 
             issuerCard(for: membership)
 
-            Text(membership.name)
-                .font(.largeTitle.bold())
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            memberIdentifier(for: membership)
+            memberIdentity(membership)
 
             ForEach(membership.flags.sorted(), id: \.self) { flag in
                 Text(issuer?.label(for: flag) ?? "Flag \(flag)")
@@ -468,17 +465,27 @@ private struct ScanResultView: View {
         }
     }
 
-    @ViewBuilder private func memberIdentifier(for membership: VerifiedMembership) -> some View {
-        switch membership.memberIdentifier {
-        case .none:
-            EmptyView()
-        case let .number(identifier):
-            LabeledContent("Member number", value: String(identifier))
-                .foregroundStyle(.secondary)
-        case let .text(identifier):
-            LabeledContent("Member identifier", value: identifier)
-                .foregroundStyle(.secondary)
+    private func memberIdentity(_ membership: VerifiedMembership) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(membership.name)
+                .font(.largeTitle.bold())
+            switch membership.memberIdentifier {
+            case .none:
+                EmptyView()
+            case let .number(identifier):
+                identifierText(String(identifier))
+            case let .text(identifier):
+                identifierText(identifier)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func identifierText(_ identifier: String) -> some View {
+        Text("id: \(identifier)")
+            .font(.subheadline.monospaced())
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func issuerCard(for membership: VerifiedMembership) -> some View {

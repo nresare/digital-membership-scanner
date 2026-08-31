@@ -4,6 +4,7 @@ import UIKit
 import ZXingCpp
 
 struct QRScannerView: UIViewControllerRepresentable {
+    let isPaused: Bool
     let onCodeScanned: (Data) -> Void
     let onFailure: (String) -> Void
 
@@ -11,10 +12,13 @@ struct QRScannerView: UIViewControllerRepresentable {
         let controller = ScannerViewController()
         controller.onCodeScanned = onCodeScanned
         controller.onFailure = onFailure
+        controller.setScanningPaused(isPaused)
         return controller
     }
 
-    func updateUIViewController(_ uiViewController: ScannerViewController, context: Context) {}
+    func updateUIViewController(_ uiViewController: ScannerViewController, context: Context) {
+        uiViewController.setScanningPaused(isPaused)
+    }
 
     static func dismantleUIViewController(_ uiViewController: ScannerViewController, coordinator: ()) {
         uiViewController.stopScanning()
@@ -30,6 +34,8 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
     private let barcodeReader = ZXIBarcodeReader()
     private var previewLayer: AVCaptureVideoPreviewLayer?
     private var hasDeliveredCode = false
+    private var isPaused = false
+    private var isCaptureConfigured = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -46,6 +52,12 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
         sessionQueue.async { [captureSession] in
             if captureSession.isRunning { captureSession.stopRunning() }
         }
+    }
+
+    func setScanningPaused(_ isPaused: Bool) {
+        self.isPaused = isPaused
+        guard isCaptureConfigured else { return }
+        updateCaptureSessionState()
     }
 
     private func configureCaptureSession() {
@@ -79,10 +91,21 @@ final class ScannerViewController: UIViewController, AVCaptureVideoDataOutputSam
             layer.videoGravity = .resizeAspectFill
             view.layer.addSublayer(layer)
             previewLayer = layer
-
-            sessionQueue.async { [captureSession] in captureSession.startRunning() }
+            isCaptureConfigured = true
+            updateCaptureSessionState()
         } catch {
             onFailure?("Camera setup failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func updateCaptureSessionState() {
+        let shouldRun = !isPaused
+        sessionQueue.async { [captureSession] in
+            if shouldRun, !captureSession.isRunning {
+                captureSession.startRunning()
+            } else if !shouldRun, captureSession.isRunning {
+                captureSession.stopRunning()
+            }
         }
     }
 
