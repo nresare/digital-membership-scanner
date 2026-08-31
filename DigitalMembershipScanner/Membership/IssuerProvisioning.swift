@@ -31,11 +31,13 @@ struct IssuerSetupResponse: Decodable, Equatable, Sendable {
 
 struct SetupIssuer: Decodable, Equatable, Identifiable, Sendable {
     let id: String
+    let name: String
     let description: String
     let provisionURL: String
 
     enum CodingKeys: String, CodingKey {
         case id
+        case name
         case description
         case provisionURL = "provision_url"
     }
@@ -56,6 +58,7 @@ struct SetupIssuer: Decodable, Equatable, Identifiable, Sendable {
 struct IssuerProvisioningResponse: Decodable, Sendable {
     let algorithm: String
     let id: String
+    let name: String
     let description: String
     let nameModelID: UInt32
     let nameModelURL: String
@@ -65,6 +68,7 @@ struct IssuerProvisioningResponse: Decodable, Sendable {
     enum CodingKeys: String, CodingKey {
         case algorithm
         case id
+        case name
         case description
         case nameModelID = "name_model_id"
         case nameModelURL = "name_model_url"
@@ -82,13 +86,30 @@ struct IssuerProvisioningResponse: Decodable, Sendable {
 
         let table = try NameCompressionTable(encoded: modelData)
         guard table.id == nameModelID else { throw IssuerProvisioningError.invalidModelID }
-        return IssuerConfiguration(publicKey: publicKey, model: table)
+        return IssuerConfiguration(
+            publicKey: publicKey,
+            model: table,
+            issuer: IssuerProfile(id: id, name: name, description: description, flagLabels: flags)
+        )
+    }
+}
+
+struct IssuerProfile: Codable, Equatable, Sendable {
+    let id: String
+    let name: String
+    let description: String
+    let flagLabels: [String]
+
+    func label(for flag: Int) -> String? {
+        guard flagLabels.indices.contains(flag), !flagLabels[flag].isEmpty else { return nil }
+        return flagLabels[flag]
     }
 }
 
 struct IssuerConfiguration: Sendable {
     let publicKey: Data
     let model: NameCompressionTable
+    let issuer: IssuerProfile
 }
 
 @MainActor
@@ -118,14 +139,9 @@ final class IssuerTrustStore: ObservableObject {
 
     func validator() -> MembershipCredentialValidator {
         guard let configuration else { return MembershipCredentialValidator() }
-        let keyIDs = UInt8(0)...UInt8(7)
         return MembershipCredentialValidator(
-            verifier: BLSTMembershipSignatureVerifier(
-                trustedPublicKeys: Dictionary(uniqueKeysWithValues: keyIDs.map { ($0, configuration.publicKey) })
-            ),
-            nameDecoder: NameCompressionMembershipNameDecoder(
-                models: Dictionary(uniqueKeysWithValues: keyIDs.map { ($0, configuration.model) })
-            )
+            verifier: BLSTMembershipSignatureVerifier(trustedPublicKey: configuration.publicKey),
+            nameDecoder: NameCompressionMembershipNameDecoder(model: configuration.model)
         )
     }
 
@@ -198,7 +214,8 @@ final class IssuerTrustStore: ObservableObject {
             sourceURL: sourceURL.absoluteString,
             publicKey: configuration.publicKey,
             modelID: configuration.model.id,
-            modelFile: modelFile
+            modelFile: modelFile,
+            issuer: configuration.issuer
         )
         defaults.set(try JSONEncoder().encode(metadata), forKey: Self.metadataKey)
     }
@@ -211,7 +228,7 @@ final class IssuerTrustStore: ObservableObject {
               let model = try? NameCompressionTable(encoded: modelData),
               model.id == metadata.modelID
         else { return nil }
-        return IssuerConfiguration(publicKey: metadata.publicKey, model: model)
+        return IssuerConfiguration(publicKey: metadata.publicKey, model: model, issuer: metadata.issuer)
     }
 
     private static func httpURL(from input: String) -> URL? {
@@ -236,6 +253,7 @@ private struct StoredIssuer: Codable {
     let publicKey: Data
     let modelID: UInt32
     let modelFile: String
+    let issuer: IssuerProfile
 }
 
 private extension Data {

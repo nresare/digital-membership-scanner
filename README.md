@@ -41,8 +41,9 @@ non-canonical, identity, and wrong-subgroup G1 signatures and G2 public keys bef
 
 QR contents are captured locally and are not transmitted. The app validates the version 1 binary
 structure and implements BLS12-381 verification, but no issuer public key is provisioned by default.
-Until a trusted key is supplied out of band, the app does not display the encoded name or flags.
+Until a trusted issuer is selected from a setup service, the app does not display the encoded name or
+flags.
 
-The upstream format is now draft 0.4 and encodes names with `namecompress`. This checkout still
-parses the earlier UTF-8 name field and therefore needs the issuer-specific name model integration
-before it can read credentials produced by the current reference service.
+The scanner implements draft 0.5, including the issuance word, optional member identifiers, header
+flags, and issuer-specific `namecompress` models. Issuer discovery defaults to
+`https://dm.noa.re/setup` and also accepts a custom setup URL.

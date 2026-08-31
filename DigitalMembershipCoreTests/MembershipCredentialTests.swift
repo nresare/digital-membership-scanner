@@ -7,17 +7,63 @@ struct MembershipCredentialTests {
     private let parser = MembershipCredentialParser()
 
     @Test func parsesSpecificationExampleLayout() throws {
-        let parsed = try parser.parse(makeCredential(header: 0x29, flags: [0x21], name: "Alice"))
+        let parsed = try parser.parse(
+            makeCredential(
+                header: 0x29,
+                issuanceWord: [0x07, 0x8A],
+                identifier: [0x10, 0x92],
+                flags: [0x04],
+                name: "Alice"
+            )
+        )
         #expect(parsed.version == 1)
-        #expect(parsed.keyID == 2)
+        #expect(parsed.issueDay == 241)
+        #expect(parsed.memberIdentifier == .number(4242))
         #expect(parsed.flags == [0, 5])
         #expect(parsed.nameBytes == Data("Alice".utf8))
         #expect(parsed.signature.count == 48)
     }
 
     @Test func parsesExtendedFlagLength() throws {
-        let parsed = try parser.parse(makeCredential(header: 0x23, flags: [0x01, 0x00, 0x80], name: "A"))
-        #expect(parsed.flags == [0, 23])
+        let parsed = try parser.parse(makeCredential(header: 0x38, flags: [0x00, 0x00, 0x01], name: "A"))
+        #expect(parsed.flags == [19])
+    }
+
+    @Test func parsesLiveChoirQRNameAtTheDraftPointFiveOffset() throws {
+        let parsed = try parser.parse(Self.liveChoirCredential)
+
+        #expect(parsed.issueDay == 241)
+        #expect(parsed.memberIdentifier == .none)
+        #expect(parsed.flags.isEmpty)
+        #expect(parsed.nameBytes == Self.hexData("1a1ad80298"))
+    }
+
+    @Test func parsesTextMemberIdentifier() throws {
+        let parsed = try parser.parse(
+            makeCredential(
+                header: 0x20,
+                issuanceWord: [0x00, 0x0F],
+                identifier: [0x05] + Array("AB-99".utf8),
+                flags: [],
+                name: "A"
+            )
+        )
+        #expect(parsed.issueDay == 1)
+        #expect(parsed.memberIdentifier == .text("AB-99"))
+    }
+
+    @Test func rejectsNonMinimalNumericIdentifier() {
+        #expect(throws: MembershipCredentialError.nonMinimalIdentifier) {
+            try parser.parse(
+                makeCredential(
+                    header: 0x20,
+                    issuanceWord: [0x00, 0x0A],
+                    identifier: [0x00, 0x01],
+                    flags: [],
+                    name: "A"
+                )
+            )
+        }
     }
 
     @Test func rejectsShortCredential() {
@@ -34,13 +80,13 @@ struct MembershipCredentialTests {
 
     @Test func rejectsNonMinimalExtendedFlagLength() {
         #expect(throws: MembershipCredentialError.invalidExtendedFlagLength) {
-            try parser.parse(makeCredential(header: 0x23, flags: [0x01, 0x01], name: "A"))
+            try parser.parse(makeCredential(header: 0x38, flags: [0x01], name: "A", extendedFlagLength: 1))
         }
     }
 
     @Test func rejectsTrailingZeroFlagByte() {
         #expect(throws: MembershipCredentialError.nonMinimalFlags) {
-            try parser.parse(makeCredential(header: 0x22, flags: [0x01, 0x00], name: "A"))
+            try parser.parse(makeCredential(header: 0x30, flags: [0x01, 0x00], name: "A"))
         }
     }
 
@@ -55,12 +101,12 @@ struct MembershipCredentialTests {
         }
     }
 
-    @Test func validatorDoesNotRevealNameWithoutTrustedKey() {
+    @Test func validatorDoesNotRevealNameWithoutTrustedIssuer() {
         let result = MembershipCredentialValidator().validate(
             makeCredential(header: 0x20, flags: [], name: "Private Name")
         )
-        guard case .trustedKeyUnavailable(keyID: 0) = result else {
-            Issue.record("Expected a missing-key result")
+        guard case .trustedIssuerUnavailable = result else {
+            Issue.record("Expected a missing-issuer result")
             return
         }
     }
@@ -73,12 +119,13 @@ struct MembershipCredentialTests {
         }
         #expect(membership.name == "Alice")
         #expect(membership.flags == [0, 5])
-        #expect(membership.keyID == 2)
+        #expect(membership.issueDay == 241)
+        #expect(membership.memberIdentifier == .none)
     }
 
     @Test func rejectsAlteredSignedPayload() {
         var credential = Self.referenceCredential
-        credential[credential.startIndex + 2] = Character("B").asciiValue!
+        credential[credential.startIndex + 4] = Character("B").asciiValue!
 
         guard case .rejected = validator().validate(credential) else {
             Issue.record("Expected the altered credential to be rejected")
@@ -86,12 +133,10 @@ struct MembershipCredentialTests {
         }
     }
 
-    @Test func rejectsKeyIDTamperingEvenWhenKeyBytesAreReused() {
+    @Test func rejectsHeaderTampering() {
         var credential = Self.referenceCredential
-        credential[credential.startIndex] = 0x2D
-        let verifier = BLSTMembershipSignatureVerifier(
-            trustedPublicKeys: [2: Self.referencePublicKey, 3: Self.referencePublicKey]
-        )
+        credential[credential.startIndex] = 0x2A
+        let verifier = BLSTMembershipSignatureVerifier(trustedPublicKey: Self.referencePublicKey)
 
         guard case .rejected = MembershipCredentialValidator(verifier: verifier).validate(credential) else {
             Issue.record("Expected the altered key ID to invalidate the signature")
@@ -123,7 +168,7 @@ struct MembershipCredentialTests {
     @Test func rejectsIdentityTrustedPublicKey() {
         var identity = Data([0xC0])
         identity.append(Data(repeating: 0, count: BLSTMembershipSignatureVerifier.publicKeyLength - 1))
-        let verifier = BLSTMembershipSignatureVerifier(trustedPublicKeys: [2: identity])
+        let verifier = BLSTMembershipSignatureVerifier(trustedPublicKey: identity)
 
         guard case .rejected = MembershipCredentialValidator(verifier: verifier).validate(Self.referenceCredential)
         else {
@@ -133,7 +178,7 @@ struct MembershipCredentialTests {
     }
 
     @Test func rejectsWrongLengthTrustedPublicKey() {
-        let verifier = BLSTMembershipSignatureVerifier(trustedPublicKeys: [2: Data(repeating: 0, count: 95)])
+        let verifier = BLSTMembershipSignatureVerifier(trustedPublicKey: Data(repeating: 0, count: 95))
 
         guard case .rejected = MembershipCredentialValidator(verifier: verifier).validate(Self.referenceCredential)
         else {
@@ -144,12 +189,12 @@ struct MembershipCredentialTests {
 
     private func validator() -> MembershipCredentialValidator {
         MembershipCredentialValidator(
-            verifier: BLSTMembershipSignatureVerifier(trustedPublicKeys: [2: Self.referencePublicKey]),
+            verifier: BLSTMembershipSignatureVerifier(trustedPublicKey: Self.referencePublicKey),
             nameDecoder: UTF8MembershipNameDecoder()
         )
     }
 
-    // Generated by digital-membership's Rust encoder path using blst 0.3.17 and fixed IKM 0x42 × 32.
+    // Draft-0.5 signature fixture generated with blst 0.3.17 and fixed IKM 0x42 × 32.
     private static let referencePublicKey = hexData(
         "af36910e3a5b90ad6de8807b56001898196afb6da4d51380249039384450b67d" +
             "b79d58d01ec95b4b8a53b8a3991822e91055cc8480f78958cd7e5a079f13eda7" +
@@ -157,9 +202,16 @@ struct MembershipCredentialTests {
     )
 
     private static let referenceCredential = hexData(
-        "2921416c696365" +
-            "97e0ff4ce838ddfe96c92f7e4f84bc84475bbe718c856f9a248f29a6fe8a82fd" +
-            "eec852b4b7f7aee8b0f36d65ba1ecb86"
+        "29078804416c696365" +
+            "987d733c2093ee12d124ea2d9371a2fe8f2394b4a498b96124554b15c21164ce" +
+            "46ba3250670f7b7dcbbad3212f9666e2"
+    )
+
+    // Downloaded from /api/choir/qr?name=Bo+Smith and decoded with the same ZXing release as the app.
+    private static let liveChoirCredential = hexData(
+        "2007881a1ad80298b267f76efbf8" +
+            "96161bbd6b07e2e5564c807812b9bee252fd723211773233e35149db88712de6" +
+            "7cc1389a27ef2f5cf6e0"
     )
 
     private static func hexData(_ value: String) -> Data {
@@ -176,16 +228,39 @@ struct MembershipCredentialTests {
 
     private struct FixedNameDecoder: MembershipNameDecoding {
         let name: String
-        func decompressName(_ bytes: Data, keyID: UInt8) throws -> String { name }
+        func decompressName(_ bytes: Data) throws -> String { name }
     }
 
-    private func makeCredential(header: UInt8, flags: [UInt8], name: String) -> Data {
-        makeCredential(header: header, flags: flags, nameBytes: Data(name.utf8))
+    private func makeCredential(
+        header: UInt8,
+        issuanceWord: [UInt8] = [0x00, 0x00],
+        identifier: [UInt8] = [],
+        flags: [UInt8],
+        name: String,
+        extendedFlagLength: UInt8? = nil
+    ) -> Data {
+        makeCredential(
+            header: header,
+            issuanceWord: issuanceWord,
+            identifier: identifier,
+            flags: flags,
+            nameBytes: Data(name.utf8),
+            extendedFlagLength: extendedFlagLength
+        )
     }
 
-    private func makeCredential(header: UInt8, flags: [UInt8], nameBytes: Data) -> Data {
+    private func makeCredential(
+        header: UInt8,
+        issuanceWord: [UInt8] = [0x00, 0x00],
+        identifier: [UInt8] = [],
+        flags: [UInt8],
+        nameBytes: Data,
+        extendedFlagLength: UInt8? = nil
+    ) -> Data {
         var data = Data([header])
-        if header & 0b11 == 0b11 { data.append(UInt8(flags.count)) }
+        if (header >> 3) & 0b11 == 0b11 { data.append(extendedFlagLength ?? UInt8(flags.count)) }
+        data.append(contentsOf: issuanceWord)
+        data.append(contentsOf: identifier)
         data.append(contentsOf: flags)
         data.append(nameBytes)
         data.append(Data(repeating: 0x80, count: 48))
@@ -199,13 +274,14 @@ struct IssuerSetupTests {
         let response = try JSONDecoder().decode(
             IssuerSetupResponse.self,
             from: Data(
-                #"{"issuers":[{"id":"choir","description":"Example Choir","provision_url":"/api/choir/provision"}]}"#.utf8
+                #"{"issuers":[{"id":"choir","name":"Example Choir","description":"A friendly community choir.","provision_url":"/api/choir/provision"}]}"#.utf8
             )
         )
 
         #expect(response.issuers.count == 1)
         #expect(response.issuers[0].id == "choir")
-        #expect(response.issuers[0].description == "Example Choir")
+        #expect(response.issuers[0].name == "Example Choir")
+        #expect(response.issuers[0].description == "A friendly community choir.")
         #expect(
             try response.issuers[0].provisioningEndpoint(relativeTo: #require(URL(string: "https://dm.noa.re/setup")))
                 == URL(string: "https://dm.noa.re/api/choir/provision")
@@ -213,7 +289,12 @@ struct IssuerSetupTests {
     }
 
     @Test func rejectsNonHTTPProvisioningURL() throws {
-        let issuer = SetupIssuer(id: "choir", description: "Example Choir", provisionURL: "file:///tmp/key")
+        let issuer = SetupIssuer(
+            id: "choir",
+            name: "Example Choir",
+            description: "A friendly community choir.",
+            provisionURL: "file:///tmp/key"
+        )
         let setupURL = try #require(URL(string: "https://dm.noa.re/setup"))
 
         #expect(throws: IssuerProvisioningError.invalidProvisioningURL) {
@@ -224,7 +305,8 @@ struct IssuerSetupTests {
     @Test func rejectsProvisioningURLOnAnotherOrigin() throws {
         let issuer = SetupIssuer(
             id: "choir",
-            description: "Example Choir",
+            name: "Example Choir",
+            description: "A friendly community choir.",
             provisionURL: "https://example.com/api/choir/provision"
         )
         let setupURL = try #require(URL(string: "https://dm.noa.re/setup"))
@@ -234,15 +316,31 @@ struct IssuerSetupTests {
         }
     }
 
-    @Test func decodesCurrentProvisioningResponseWithoutKeyID() throws {
+    @Test func decodesIssuerPresentationMetadataAndFlagLabels() throws {
         let response = try JSONDecoder().decode(
             IssuerProvisioningResponse.self,
             from: Data(
-                #"{"algorithm":"BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_NUL_","id":"choir","description":"Example Choir","name_model_id":123,"name_model_url":"/api/choir/model/model.ncmp.xz","public_key":"abc","flags":["member"]}"#.utf8
+                #"{"algorithm":"BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_NUL_","id":"choir","name":"Example Choir","description":"A friendly community choir.","name_model_id":123,"name_model_url":"/api/choir/model/model.ncmp.xz","public_key":"abc","flags":["member","","party planners"]}"#.utf8
             )
         )
 
         #expect(response.id == "choir")
-        #expect(response.flags == ["member"])
+        #expect(response.name == "Example Choir")
+        #expect(response.description == "A friendly community choir.")
+        #expect(response.flags == ["member", "", "party planners"])
+    }
+
+    @Test func resolvesOnlyNonEmptyFlagLabels() {
+        let profile = IssuerProfile(
+            id: "choir",
+            name: "Example Choir",
+            description: "A friendly community choir.",
+            flagLabels: ["member", "", "party planners"]
+        )
+
+        #expect(profile.label(for: 0) == "member")
+        #expect(profile.label(for: 1) == nil)
+        #expect(profile.label(for: 2) == "party planners")
+        #expect(profile.label(for: 3) == nil)
     }
 }

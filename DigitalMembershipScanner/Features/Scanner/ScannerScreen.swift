@@ -35,9 +35,8 @@ struct ScannerScreen: View {
                 .accessibilityHint("Download a trusted issuer public key and name model")
             }
         }
-        .preferredColorScheme(.dark)
         .sheet(item: $result) { result in
-            ScanResultView(result: result) { resetScanner() }
+            ScanResultView(result: result, issuer: issuerStore.configuration?.issuer) { resetScanner() }
                 .interactiveDismissDisabled()
         }
         .sheet(isPresented: $isPresentingIssuerConfiguration) {
@@ -140,7 +139,7 @@ private final class ScanFeedbackPlayer {
         switch result {
         case .verified:
             playSuccess()
-        case .rejected, .trustedKeyUnavailable:
+        case .rejected, .trustedIssuerUnavailable:
             playWarning()
         }
     }
@@ -226,6 +225,23 @@ private struct IssuerConfigurationView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if let installedIssuer = store.configuration?.issuer {
+                    Section("Current issuer") {
+                        Label {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(installedIssuer.name)
+                                    .foregroundStyle(.primary)
+                                Text("Currently installed")
+                                    .font(.caption)
+                                    .foregroundStyle(.mint)
+                            }
+                        } icon: {
+                            Image(systemName: "checkmark.shield.fill")
+                                .foregroundStyle(.mint)
+                        }
+                    }
+                }
+
                 Section {
                     if isLoadingIssuers {
                         HStack {
@@ -234,18 +250,13 @@ private struct IssuerConfigurationView: View {
                             Spacer()
                         }
                     } else {
-                        ForEach(store.availableIssuers) { issuer in
+                        ForEach(availableIssuers) { issuer in
                             Button {
                                 install(issuer)
                             } label: {
                                 HStack {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(issuer.description)
-                                            .foregroundStyle(.primary)
-                                        Text(issuer.id)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
+                                    Text(issuer.name)
+                                        .foregroundStyle(.primary)
                                     Spacer()
                                     if installingIssuerID == issuer.id {
                                         ProgressView()
@@ -259,8 +270,8 @@ private struct IssuerConfigurationView: View {
                             .disabled(installingIssuerID != nil)
                         }
 
-                        if store.availableIssuers.isEmpty, store.setupError == nil {
-                            Text("This setup service has no issuers configured.")
+                        if availableIssuers.isEmpty, store.setupError == nil {
+                            Text(store.isConfigured ? "No other issuers are available." : "This setup service has no issuers configured.")
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -283,12 +294,8 @@ private struct IssuerConfigurationView: View {
                     }
                 }
 
-                if store.isConfigured || store.provisioningError != nil {
+                if store.provisioningError != nil {
                     Section {
-                        if store.isConfigured {
-                            Label("An issuer configuration is installed", systemImage: "checkmark.shield.fill")
-                                .foregroundStyle(.green)
-                        }
                         if let error = store.provisioningError {
                             Text(error).foregroundStyle(.red)
                         }
@@ -310,6 +317,11 @@ private struct IssuerConfigurationView: View {
                 }
             }
         }
+    }
+
+    private var availableIssuers: [SetupIssuer] {
+        guard let installedID = store.configuration?.issuer.id else { return store.availableIssuers }
+        return store.availableIssuers.filter { $0.id != installedID }
     }
 
     private func loadIssuersOnPresentation() async {
@@ -398,58 +410,132 @@ private struct PermissionView: View {
 
 private struct ScanResultView: View {
     let result: MembershipVerificationResult
+    let issuer: IssuerProfile?
     let scanAgain: () -> Void
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 20) {
-                statusIcon.font(.system(size: 64))
-                Text(title).font(.largeTitle.bold())
-                Text(message).multilineTextAlignment(.center).foregroundStyle(.secondary)
-
-                if case let .verified(membership) = result {
-                    GroupBox("Membership") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            LabeledContent("Name", value: membership.name)
-                            LabeledContent("Key ID", value: String(membership.keyID))
-                            LabeledContent("Flags", value: membership.flags.sorted().map(String.init).joined(separator: ", "))
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    if case let .verified(membership) = result {
+                        verifiedContent(membership)
+                    } else {
+                        errorContent
                     }
                 }
-
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(24)
+            }
+            .background(Color(uiColor: .systemGroupedBackground))
+            .safeAreaInset(edge: .bottom) {
                 Button("Scan another card", action: scanAgain)
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
                     .buttonStyle(.borderedProminent)
                     .tint(.mint)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 12)
+                    .background(.bar)
             }
-            .padding(24)
-            .navigationTitle("Scan result")
-            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
         }
     }
 
-    @ViewBuilder private var statusIcon: some View {
-        switch result {
-        case .verified: Image(systemName: "checkmark.shield.fill").foregroundStyle(.green)
-        case .rejected: Image(systemName: "xmark.shield.fill").foregroundStyle(.red)
-        case .trustedKeyUnavailable: Image(systemName: "key.slash.fill").foregroundStyle(.orange)
+    private func verifiedContent(_ membership: VerifiedMembership) -> some View {
+        VStack(alignment: .leading, spacing: 24) {
+            Label("Signature verified", systemImage: "checkmark.shield.fill")
+                .font(.subheadline.bold())
+                .textCase(.uppercase)
+                .foregroundStyle(.mint)
+
+            issuerCard(for: membership)
+
+            Text(membership.name)
+                .font(.largeTitle.bold())
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            memberIdentifier(for: membership)
+
+            ForEach(membership.flags.sorted(), id: \.self) { flag in
+                Text(issuer?.label(for: flag) ?? "Flag \(flag)")
+                    .font(.title3.weight(.semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(20)
+                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
+            }
         }
     }
 
-    private var title: String {
-        switch result {
-        case .verified: "Valid membership"
-        case .rejected: "Invalid card"
-        case .trustedKeyUnavailable: "Key unavailable"
+    @ViewBuilder private func memberIdentifier(for membership: VerifiedMembership) -> some View {
+        switch membership.memberIdentifier {
+        case .none:
+            EmptyView()
+        case let .number(identifier):
+            LabeledContent("Member number", value: String(identifier))
+                .foregroundStyle(.secondary)
+        case let .text(identifier):
+            LabeledContent("Member identifier", value: identifier)
+                .foregroundStyle(.secondary)
         }
     }
 
-    private var message: String {
-        switch result {
-        case .verified: "The membership signature is valid."
-        case let .rejected(reason): reason
-        case let .trustedKeyUnavailable(keyID):
-            "The card is structurally valid, but no trusted BLS public key is configured for key ID \(keyID). Its name and flags have not been displayed."
+    private func issuerCard(for membership: VerifiedMembership) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Issuer")
+                .font(.caption.weight(.semibold))
+                .textCase(.uppercase)
+                .foregroundStyle(.secondary)
+            Text(issuer?.name ?? "Configured issuer")
+                .font(.title3.bold())
+            if let description = issuer?.description, !description.isEmpty {
+                Text(description)
+                    .foregroundStyle(.secondary)
+            }
+            Divider()
+            LabeledContent("Issued", value: issueDate(for: membership.issueDay))
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var errorContent: some View {
+        VStack(spacing: 20) {
+            switch result {
+            case let .rejected(reason):
+                Image(systemName: "xmark.shield.fill")
+                    .font(.system(size: 64))
+                    .foregroundStyle(.red)
+                Text("Invalid card").font(.largeTitle.bold())
+                Text(reason)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+            case .trustedIssuerUnavailable:
+                Image(systemName: "key.slash.fill")
+                    .font(.system(size: 64))
+                    .foregroundStyle(.orange)
+                Text("Issuer unavailable").font(.largeTitle.bold())
+                Text("The card is structurally valid, but no trusted issuer is configured. Its name and flags have not been displayed.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+            case .verified:
+                EmptyView()
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 32)
+    }
+
+    private func issueDate(for issueDay: UInt16) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let epoch = calendar.date(from: DateComponents(year: 2026, month: 1, day: 1))!
+        let date = calendar.date(byAdding: .day, value: Int(issueDay), to: epoch)!
+        let formatter = DateFormatter()
+        formatter.dateStyle = .long
+        formatter.timeStyle = .none
+        formatter.timeZone = calendar.timeZone
+        return formatter.string(from: date)
     }
 }

@@ -5,18 +5,64 @@ final class MembershipCredentialTests: XCTestCase {
     private let parser = MembershipCredentialParser()
 
     func testParsesSpecificationExampleLayout() throws {
-        let payload = makeCredential(header: 0x29, flags: [0x21], name: "Alice")
+        let payload = makeCredential(
+            header: 0x29,
+            issuanceWord: [0x07, 0x8A],
+            identifier: [0x10, 0x92],
+            flags: [0x04],
+            name: "Alice"
+        )
         let parsed = try parser.parse(payload)
         XCTAssertEqual(parsed.version, 1)
-        XCTAssertEqual(parsed.keyID, 2)
+        XCTAssertEqual(parsed.issueDay, 241)
+        XCTAssertEqual(parsed.memberIdentifier, .number(4242))
         XCTAssertEqual(parsed.flags, [0, 5])
         XCTAssertEqual(parsed.nameBytes, Data("Alice".utf8))
         XCTAssertEqual(parsed.signature.count, 48)
     }
 
     func testParsesExtendedFlagLength() throws {
-        let payload = makeCredential(header: 0x23, flags: [0x01, 0x00, 0x80], name: "A")
-        XCTAssertEqual(try parser.parse(payload).flags, [0, 23])
+        let payload = makeCredential(header: 0x38, flags: [0x00, 0x00, 0x01], name: "A")
+        XCTAssertEqual(try parser.parse(payload).flags, [19])
+    }
+
+    func testParsesLiveChoirQRNameAtTheDraftPointFiveOffset() throws {
+        let parsed = try parser.parse(Self.liveChoirCredential)
+
+        XCTAssertEqual(parsed.issueDay, 241)
+        XCTAssertEqual(parsed.memberIdentifier, .none)
+        XCTAssertTrue(parsed.flags.isEmpty)
+        XCTAssertEqual(parsed.nameBytes, Self.hexData("1a1ad80298"))
+    }
+
+    func testParsesTextMemberIdentifier() throws {
+        let parsed = try parser.parse(
+            makeCredential(
+                header: 0x20,
+                issuanceWord: [0x00, 0x0F],
+                identifier: [0x05] + Array("AB-99".utf8),
+                flags: [],
+                name: "A"
+            )
+        )
+        XCTAssertEqual(parsed.issueDay, 1)
+        XCTAssertEqual(parsed.memberIdentifier, .text("AB-99"))
+    }
+
+    func testRejectsNonMinimalNumericIdentifier() {
+        XCTAssertThrowsError(
+            try parser.parse(
+                makeCredential(
+                    header: 0x20,
+                    issuanceWord: [0x00, 0x0A],
+                    identifier: [0x00, 0x01],
+                    flags: [],
+                    name: "A"
+                )
+            )
+        ) {
+            XCTAssertEqual($0 as? MembershipCredentialError, .nonMinimalIdentifier)
+        }
     }
 
     func testRejectsShortCredential() {
@@ -33,14 +79,14 @@ final class MembershipCredentialTests: XCTestCase {
     }
 
     func testRejectsNonMinimalExtendedFlagLength() {
-        let payload = makeCredential(header: 0x23, flags: [0x01, 0x01], name: "A")
+        let payload = makeCredential(header: 0x38, flags: [0x01], name: "A", extendedFlagLength: 1)
         XCTAssertThrowsError(try parser.parse(payload)) {
             XCTAssertEqual($0 as? MembershipCredentialError, .invalidExtendedFlagLength)
         }
     }
 
     func testRejectsTrailingZeroFlagByte() {
-        let payload = makeCredential(header: 0x22, flags: [0x01, 0x00], name: "A")
+        let payload = makeCredential(header: 0x30, flags: [0x01, 0x00], name: "A")
         XCTAssertThrowsError(try parser.parse(payload)) {
             XCTAssertEqual($0 as? MembershipCredentialError, .nonMinimalFlags)
         }
@@ -56,12 +102,12 @@ final class MembershipCredentialTests: XCTestCase {
         }
     }
 
-    func testValidatorDoesNotRevealNameWithoutTrustedKey() {
+    func testValidatorDoesNotRevealNameWithoutTrustedIssuer() {
         let result = MembershipCredentialValidator().validate(
             makeCredential(header: 0x20, flags: [], name: "Private Name")
         )
-        guard case .trustedKeyUnavailable(keyID: 0) = result else {
-            return XCTFail("Expected a missing-key result")
+        guard case .trustedIssuerUnavailable = result else {
+            return XCTFail("Expected a missing-issuer result")
         }
     }
 
@@ -72,24 +118,23 @@ final class MembershipCredentialTests: XCTestCase {
         }
         XCTAssertEqual(membership.name, "Alice")
         XCTAssertEqual(membership.flags, [0, 5])
-        XCTAssertEqual(membership.keyID, 2)
+        XCTAssertEqual(membership.issueDay, 241)
+        XCTAssertEqual(membership.memberIdentifier, .none)
     }
 
     func testRejectsAlteredSignedPayload() {
         var credential = Self.referenceCredential
-        credential[credential.startIndex + 2] = Character("B").asciiValue!
+        credential[credential.startIndex + 4] = Character("B").asciiValue!
 
         guard case .rejected = validator().validate(credential) else {
             return XCTFail("Expected the altered credential to be rejected")
         }
     }
 
-    func testRejectsKeyIDTamperingEvenWhenKeyBytesAreReused() {
+    func testRejectsHeaderTampering() {
         var credential = Self.referenceCredential
-        credential[credential.startIndex] = 0x2D
-        let verifier = BLSTMembershipSignatureVerifier(
-            trustedPublicKeys: [2: Self.referencePublicKey, 3: Self.referencePublicKey]
-        )
+        credential[credential.startIndex] = 0x2A
+        let verifier = BLSTMembershipSignatureVerifier(trustedPublicKey: Self.referencePublicKey)
 
         guard case .rejected = MembershipCredentialValidator(verifier: verifier).validate(credential) else {
             return XCTFail("Expected the altered key ID to invalidate the signature")
@@ -118,7 +163,7 @@ final class MembershipCredentialTests: XCTestCase {
     func testRejectsIdentityTrustedPublicKey() {
         var identity = Data([0xC0])
         identity.append(Data(repeating: 0, count: BLSTMembershipSignatureVerifier.publicKeyLength - 1))
-        let verifier = BLSTMembershipSignatureVerifier(trustedPublicKeys: [2: identity])
+        let verifier = BLSTMembershipSignatureVerifier(trustedPublicKey: identity)
 
         guard case .rejected = MembershipCredentialValidator(verifier: verifier).validate(Self.referenceCredential)
         else {
@@ -127,7 +172,7 @@ final class MembershipCredentialTests: XCTestCase {
     }
 
     func testRejectsWrongLengthTrustedPublicKey() {
-        let verifier = BLSTMembershipSignatureVerifier(trustedPublicKeys: [2: Data(repeating: 0, count: 95)])
+        let verifier = BLSTMembershipSignatureVerifier(trustedPublicKey: Data(repeating: 0, count: 95))
 
         guard case .rejected = MembershipCredentialValidator(verifier: verifier).validate(Self.referenceCredential)
         else {
@@ -137,12 +182,12 @@ final class MembershipCredentialTests: XCTestCase {
 
     private func validator() -> MembershipCredentialValidator {
         MembershipCredentialValidator(
-            verifier: BLSTMembershipSignatureVerifier(trustedPublicKeys: [2: Self.referencePublicKey]),
+            verifier: BLSTMembershipSignatureVerifier(trustedPublicKey: Self.referencePublicKey),
             nameDecoder: UTF8MembershipNameDecoder()
         )
     }
 
-    // Generated by digital-membership's Rust encoder path using blst 0.3.17 and fixed IKM 0x42 × 32.
+    // Draft-0.5 signature fixture generated with blst 0.3.17 and fixed IKM 0x42 × 32.
     private static let referencePublicKey = hexData(
         "af36910e3a5b90ad6de8807b56001898196afb6da4d51380249039384450b67d" +
             "b79d58d01ec95b4b8a53b8a3991822e91055cc8480f78958cd7e5a079f13eda7" +
@@ -150,9 +195,16 @@ final class MembershipCredentialTests: XCTestCase {
     )
 
     private static let referenceCredential = hexData(
-        "2921416c696365" +
-            "97e0ff4ce838ddfe96c92f7e4f84bc84475bbe718c856f9a248f29a6fe8a82fd" +
-            "eec852b4b7f7aee8b0f36d65ba1ecb86"
+        "29078804416c696365" +
+            "987d733c2093ee12d124ea2d9371a2fe8f2394b4a498b96124554b15c21164ce" +
+            "46ba3250670f7b7dcbbad3212f9666e2"
+    )
+
+    // Downloaded from /api/choir/qr?name=Bo+Smith and decoded with the same ZXing release as the app.
+    private static let liveChoirCredential = hexData(
+        "2007881a1ad80298b267f76efbf8" +
+            "96161bbd6b07e2e5564c807812b9bee252fd723211773233e35149db88712de6" +
+            "7cc1389a27ef2f5cf6e0"
     )
 
     private static func hexData(_ value: String) -> Data {
@@ -169,16 +221,39 @@ final class MembershipCredentialTests: XCTestCase {
 
     private struct FixedNameDecoder: MembershipNameDecoding {
         let name: String
-        func decompressName(_ bytes: Data, keyID: UInt8) throws -> String { name }
+        func decompressName(_ bytes: Data) throws -> String { name }
     }
 
-    private func makeCredential(header: UInt8, flags: [UInt8], name: String) -> Data {
-        makeCredential(header: header, flags: flags, nameBytes: Data(name.utf8))
+    private func makeCredential(
+        header: UInt8,
+        issuanceWord: [UInt8] = [0x00, 0x00],
+        identifier: [UInt8] = [],
+        flags: [UInt8],
+        name: String,
+        extendedFlagLength: UInt8? = nil
+    ) -> Data {
+        makeCredential(
+            header: header,
+            issuanceWord: issuanceWord,
+            identifier: identifier,
+            flags: flags,
+            nameBytes: Data(name.utf8),
+            extendedFlagLength: extendedFlagLength
+        )
     }
 
-    private func makeCredential(header: UInt8, flags: [UInt8], nameBytes: Data) -> Data {
+    private func makeCredential(
+        header: UInt8,
+        issuanceWord: [UInt8] = [0x00, 0x00],
+        identifier: [UInt8] = [],
+        flags: [UInt8],
+        nameBytes: Data,
+        extendedFlagLength: UInt8? = nil
+    ) -> Data {
         var data = Data([header])
-        if header & 0b11 == 0b11 { data.append(UInt8(flags.count)) }
+        if (header >> 3) & 0b11 == 0b11 { data.append(extendedFlagLength ?? UInt8(flags.count)) }
+        data.append(contentsOf: issuanceWord)
+        data.append(contentsOf: identifier)
         data.append(contentsOf: flags)
         data.append(nameBytes)
         data.append(Data(repeating: 0x80, count: 48))
