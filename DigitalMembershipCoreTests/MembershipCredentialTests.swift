@@ -274,14 +274,15 @@ struct IssuerSetupTests {
         let response = try JSONDecoder().decode(
             IssuerSetupResponse.self,
             from: Data(
-                #"{"issuers":[{"id":"choir","name":"Example Choir","description":"A friendly community choir.","provision_url":"/api/choir/provision"}]}"#.utf8
+                #"{"issuers":[{"id":"choir","name":"Example Choir Society","provision_url":"/api/choir/provision"},{"id":"fairer","name":"Make Southwark fairer","description":"We change local politics","provision_url":"/api/fairer/provision"}]}"#.utf8
             )
         )
 
-        #expect(response.issuers.count == 1)
+        #expect(response.issuers.count == 2)
         #expect(response.issuers[0].id == "choir")
-        #expect(response.issuers[0].name == "Example Choir")
-        #expect(response.issuers[0].description == "A friendly community choir.")
+        #expect(response.issuers[0].name == "Example Choir Society")
+        #expect(response.issuers[0].description == nil)
+        #expect(response.issuers[1].description == "We change local politics")
         #expect(
             try response.issuers[0].provisioningEndpoint(relativeTo: #require(URL(string: "https://dm.noa.re/setup")))
                 == URL(string: "https://dm.noa.re/api/choir/provision")
@@ -316,18 +317,34 @@ struct IssuerSetupTests {
         }
     }
 
-    @Test func decodesIssuerPresentationMetadataAndFlagLabels() throws {
+    @Test func decodesLiveIssuerPresentationMetadataAndFlagLabels() throws {
         let response = try JSONDecoder().decode(
             IssuerProvisioningResponse.self,
             from: Data(
-                #"{"algorithm":"BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_NUL_","id":"choir","name":"Example Choir","description":"A friendly community choir.","name_model_id":123,"name_model_url":"/api/choir/model/model.ncmp.xz","public_key":"abc","flags":["member","","party planners"]}"#.utf8
+                #"{"algorithm":"BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_NUL_","id":"choir","name":"Example Choir Society","name_model_id":3638818724,"name_model_url":"/api/choir/model/model.ncmp.xz","public_key":"abc","flags":["Sheet music group","Party planners"]}"#.utf8
             )
         )
 
         #expect(response.id == "choir")
-        #expect(response.name == "Example Choir")
-        #expect(response.description == "A friendly community choir.")
-        #expect(response.flags == ["member", "", "party planners"])
+        #expect(response.name == "Example Choir Society")
+        #expect(response.description == nil)
+        #expect(response.flags == ["Sheet music group", "Party planners"])
+    }
+
+    @Test func reportsThePathOfAMissingRequiredField() {
+        #expect(
+            throws: IssuerProvisioningError.invalidResponse(
+                "The setup service response is missing required field “issuers[0].name”."
+            )
+        ) {
+            try IssuerResponseDecoder.decode(
+                IssuerSetupResponse.self,
+                from: Data(
+                    #"{"issuers":[{"id":"choir","provision_url":"/api/choir/provision"}]}"#.utf8
+                ),
+                responseName: "setup service"
+            )
+        }
     }
 
     @Test func resolvesOnlyNonEmptyFlagLabels() {

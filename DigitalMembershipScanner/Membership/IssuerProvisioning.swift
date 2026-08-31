@@ -8,7 +8,7 @@ enum IssuerProvisioningError: LocalizedError, Equatable {
     case unsupportedAlgorithm(String)
     case invalidPublicKey
     case invalidModelURL
-    case unexpectedResponse
+    case invalidResponse(String)
     case invalidModelID
 
     var errorDescription: String? {
@@ -19,7 +19,7 @@ enum IssuerProvisioningError: LocalizedError, Equatable {
         case let .unsupportedAlgorithm(algorithm): "Unsupported signature algorithm: \(algorithm)."
         case .invalidPublicKey: "The issuer supplied an invalid BLS public key."
         case .invalidModelURL: "The issuer supplied an invalid name-model URL."
-        case .unexpectedResponse: "The issuer server returned an unexpected response."
+        case let .invalidResponse(message): message
         case .invalidModelID: "The downloaded name model does not match the issuer response."
         }
     }
@@ -32,7 +32,7 @@ struct IssuerSetupResponse: Decodable, Equatable, Sendable {
 struct SetupIssuer: Decodable, Equatable, Identifiable, Sendable {
     let id: String
     let name: String
-    let description: String
+    let description: String?
     let provisionURL: String
 
     enum CodingKeys: String, CodingKey {
@@ -59,7 +59,7 @@ struct IssuerProvisioningResponse: Decodable, Sendable {
     let algorithm: String
     let id: String
     let name: String
-    let description: String
+    let description: String?
     let nameModelID: UInt32
     let nameModelURL: String
     let publicKey: String
@@ -89,7 +89,7 @@ struct IssuerProvisioningResponse: Decodable, Sendable {
         return IssuerConfiguration(
             publicKey: publicKey,
             model: table,
-            issuer: IssuerProfile(id: id, name: name, description: description, flagLabels: flags)
+            issuer: IssuerProfile(id: id, name: name, description: description ?? "", flagLabels: flags)
         )
     }
 }
@@ -155,8 +155,12 @@ final class IssuerTrustStore: ObservableObject {
                 throw IssuerProvisioningError.invalidSetupURL
             }
             let (responseData, response) = try await URLSession.shared.data(from: endpoint)
-            try Self.validate(response)
-            let setup = try JSONDecoder().decode(IssuerSetupResponse.self, from: responseData)
+            try Self.validate(response, from: "setup service")
+            let setup = try IssuerResponseDecoder.decode(
+                IssuerSetupResponse.self,
+                from: responseData,
+                responseName: "setup service"
+            )
             for issuer in setup.issuers {
                 _ = try issuer.provisioningEndpoint(relativeTo: endpoint)
             }
@@ -192,13 +196,17 @@ final class IssuerTrustStore: ObservableObject {
         provisioningError = nil
 
         let (responseData, response) = try await URLSession.shared.data(from: endpoint)
-        try Self.validate(response)
-        let issuer = try JSONDecoder().decode(IssuerProvisioningResponse.self, from: responseData)
+        try Self.validate(response, from: "issuer provisioning endpoint")
+        let issuer = try IssuerResponseDecoder.decode(
+            IssuerProvisioningResponse.self,
+            from: responseData,
+            responseName: "issuer provisioning endpoint"
+        )
         guard let modelURL = URL(string: issuer.nameModelURL, relativeTo: endpoint)?.absoluteURL else {
             throw IssuerProvisioningError.invalidModelURL
         }
         let (modelData, modelResponse) = try await URLSession.shared.data(from: modelURL)
-        try Self.validate(modelResponse)
+        try Self.validate(modelResponse, from: "issuer name-model endpoint")
 
         let configuration = try issuer.validatedConfiguration(modelData: modelData)
         try save(configuration, modelData: modelData, sourceURL: endpoint)
@@ -241,10 +249,70 @@ final class IssuerTrustStore: ObservableObject {
         return url
     }
 
-    private static func validate(_ response: URLResponse) throws {
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200..<300).contains(httpResponse.statusCode)
-        else { throw IssuerProvisioningError.unexpectedResponse }
+    private static func validate(_ response: URLResponse, from responseName: String) throws {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw IssuerProvisioningError.invalidResponse(
+                "The \(responseName) did not return an HTTP response."
+            )
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw IssuerProvisioningError.invalidResponse(
+                "The \(responseName) returned HTTP \(httpResponse.statusCode)."
+            )
+        }
+    }
+}
+
+enum IssuerResponseDecoder {
+    static func decode<Response: Decodable>(
+        _ type: Response.Type,
+        from data: Data,
+        responseName: String
+    ) throws -> Response {
+        do {
+            return try JSONDecoder().decode(type, from: data)
+        } catch let DecodingError.keyNotFound(key, context) {
+            throw IssuerProvisioningError.invalidResponse(
+                "The \(responseName) response is missing required field “\(path(context.codingPath, appending: key))”."
+            )
+        } catch let DecodingError.valueNotFound(type, context) {
+            throw IssuerProvisioningError.invalidResponse(
+                "The \(responseName) response contains null at “\(path(context.codingPath))”; expected \(typeName(type))."
+            )
+        } catch let DecodingError.typeMismatch(type, context) {
+            throw IssuerProvisioningError.invalidResponse(
+                "The \(responseName) response has the wrong type at “\(path(context.codingPath))”; expected \(typeName(type))."
+            )
+        } catch let DecodingError.dataCorrupted(context) {
+            let location = path(context.codingPath)
+            let suffix = location.isEmpty ? "" : " at “\(location)”"
+            throw IssuerProvisioningError.invalidResponse(
+                "The \(responseName) response contains invalid data\(suffix): \(context.debugDescription)"
+            )
+        } catch {
+            throw IssuerProvisioningError.invalidResponse(
+                "The \(responseName) response could not be decoded: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private static func path(_ codingPath: [any CodingKey], appending key: (any CodingKey)? = nil) -> String {
+        (codingPath + [key].compactMap { $0 }).reduce(into: "") { result, component in
+            if let index = component.intValue {
+                result += "[\(index)]"
+            } else {
+                if !result.isEmpty { result += "." }
+                result += component.stringValue
+            }
+        }
+    }
+
+    private static func typeName(_ type: Any.Type) -> String {
+        switch type {
+        case is String.Type: "a string"
+        case is Int.Type: "an integer"
+        default: String(describing: type)
+        }
     }
 }
 
