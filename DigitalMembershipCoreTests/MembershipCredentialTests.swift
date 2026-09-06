@@ -52,6 +52,65 @@ struct MembershipCredentialTests {
         #expect(parsed.memberIdentifier == .text("AB-99"))
     }
 
+    @Test(arguments: ["헬로", "١٩٣٧٤\u{200F}", "می\u{200C}روم", "👩\u{200D}💻", "e\u{0301}"])
+    func acceptsUnicodeTextFields(text: String) throws {
+        let credential = makeCredential(
+            header: 0x20,
+            issuanceWord: [0x00, 0x0F],
+            identifier: [UInt8(text.utf8.count)] + Array(text.utf8),
+            flags: [],
+            name: "encoded"
+        )
+        #expect(try parser.parse(credential).memberIdentifier == .text(text))
+        let validator = MembershipCredentialValidator(
+            verifier: AlwaysValidSignatureVerifier(),
+            nameDecoder: FixedNameDecoder(name: text)
+        )
+        guard case let .verified(membership) = validator.validate(credential) else {
+            Issue.record("Expected Unicode text fields to verify")
+            return
+        }
+        #expect(membership.name == text)
+        #expect(membership.memberIdentifier == .text(text))
+    }
+
+    @Test(arguments: Array(UInt32(0)...0x1F) + Array(UInt32(0x7F)...0x9F))
+    func rejectsUnicodeControlsInBothTextFields(value: UInt32) {
+        let text = "A" + String(Unicode.Scalar(value)!)
+        #expect(throws: MembershipCredentialError.controlCharacterInIdentifier) {
+            try parser.parse(makeCredential(
+                header: 0x20,
+                issuanceWord: [0x00, 0x0F],
+                identifier: [UInt8(text.utf8.count)] + Array(text.utf8),
+                flags: [],
+                name: "A"
+            ))
+        }
+        let validator = MembershipCredentialValidator(
+            verifier: AlwaysValidSignatureVerifier(),
+            nameDecoder: FixedNameDecoder(name: text)
+        )
+        guard case let .rejected(reason) = validator.validate(
+            makeCredential(header: 0x20, flags: [], name: "encoded")
+        ) else {
+            Issue.record("Expected the decoded control character to be rejected")
+            return
+        }
+        #expect(reason == MembershipCredentialError.controlCharacterInName.localizedDescription)
+    }
+
+    @Test func rejectsMalformedUTF8Identifier() {
+        #expect(throws: MembershipCredentialError.invalidIdentifierEncoding) {
+            try parser.parse(makeCredential(
+                header: 0x20,
+                issuanceWord: [0x00, 0x0F],
+                identifier: [0x02, 0xC0, 0xAF],
+                flags: [],
+                name: "A"
+            ))
+        }
+    }
+
     @Test func rejectsNonMinimalNumericIdentifier() {
         #expect(throws: MembershipCredentialError.nonMinimalIdentifier) {
             try parser.parse(

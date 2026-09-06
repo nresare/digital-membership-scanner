@@ -119,7 +119,8 @@ struct MembershipCredentialParser: Sendable {
             guard let identifier = String(data: identifierData, encoding: .utf8) else {
                 throw MembershipCredentialError.invalidIdentifierEncoding
             }
-            guard identifier.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+            // Foundation’s controlCharacters also includes valid Unicode format characters (Cf).
+            guard identifier.unicodeScalars.allSatisfy({ $0.properties.generalCategory != .control }) else {
                 throw MembershipCredentialError.controlCharacterInIdentifier
             }
             memberIdentifier = .text(identifier)
@@ -334,7 +335,7 @@ struct MembershipCredentialValidator: Sendable {
             guard try verifier.verify(parsed) else { return .rejected("The credential signature is invalid.") }
             let name = try nameDecoder.decompressName(parsed.nameBytes)
             guard (1...255).contains(name.utf8.count) else { throw MembershipCredentialError.invalidNameLength }
-            guard name.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+            guard name.unicodeScalars.allSatisfy({ $0.properties.generalCategory != .control }) else {
                 throw MembershipCredentialError.controlCharacterInName
             }
             return .verified(
